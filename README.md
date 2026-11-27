@@ -1,9 +1,15 @@
-# GT4 Spec II for iPhone: Gran Turismo 4, recompiled
+# GT4 Spec II for iPhone: Gran Turismo 4 Spec II, recompiled
 
 A native iPhone port of **Gran Turismo 4 Spec II** (the community mod of GT4, built on the US *Online Public Beta*,
 SCUS-97436), made by *static recompilation*: the game's PS2 program is translated to C++ and compiled into a real iOS
 app, instead of being emulated instruction by instruction. It runs at **60 frames per second**, at up to **4× the PS2's
 resolution**, with **HD texture packs**, **touch controls**, **controller support** and an iOS **settings screen**.
+
+> **For Gran Turismo 4 Spec II v1.10 only.** This port is built around one exact game program: the one in the
+> Spec II v1.10 disc image. It won't work with the regular Gran Turismo 4 (USA v2.00, SCUS-97328), the PAL or Japanese
+> releases, the plain Online Public Beta, or any other Spec II version, and the build stops if your image isn't the
+> right one. [Spec II](https://www.theadmiester.co.uk/specii/) is a large community mod by TheAdmiester and contributors;
+> you make it yourself by patching your own *Online Public Beta (USA)* disc (BUILDING.md shows how).
 
 > **This is a hobby project, released as is.** It was built and tested on one iPhone. It may not work on yours, and
 > there's no guaranteed support. Claude built it with xador19, and it's shared because a lot of work went into it and
