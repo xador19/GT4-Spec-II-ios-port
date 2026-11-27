@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "source": {
+    "sha256": "36f60b1a989b343e98ca55b1f07f051aa83a3fa1a4fcb4acb409adb148afc640"
+  },
+  "aspect": {
+    "sha256": "36972c511914b87923ddb88b10a5df802dd2e1adc7b552a7f1b07203908218dc"
+  },
+  "patches": [
+    {
+      "address": "0x001C519C",
+      "old": [
+        "0x3C013F40"
+      ],
+      "new": [
+        "0x8C017F00"
+      ],
+      "block": "0x7F00",
+      "purpose": "RaceDisplay::render (0x1C5040): race HUD font x scale in wide mode, lui at,0x3F40 (0.75) -> lw at,0x7F00(zero); block value (4/3)/R"
+    },
+    {
+      "address": "0x001EB65C",
+      "old": [
+        "0x24080280"
+      ],
+      "new": [
+        "0x8C087F04"
+      ],
+      "block": "0x7F04",
+      "purpose": "rear-view mirror placement: horizontal divisor addiu t0,zero,640 -> lw t0,0x7F04(zero); block value round(640 x R / (16/9))"
+    },
+    {
+      "address": "0x001D8400",
+      "old": [
+        "0x3C0142C0"
+      ],
+      "new": [
+        "0x8C017F08"
+      ],
+      "block": "0x7F08",
+      "purpose": "RaceDisplayUtil::wideOffset (float, 0x1D83E8): edge shift lui at,0x42C0 (96.0) -> lw at,0x7F08(zero); block value 96 + 240 x (R - 16/9) below 16:9, 96 otherwise"
+    },
+    {
+      "address": "0x001D84BC",
+      "old": [
+        "0x3C0142C0"
+      ],
+      "new": [
+        "0x8C017F08"
+      ],
+      "block": "0x7F08",
+      "purpose": "RaceDisplayUtil edge offset (float, 0x1D84A8): lui at,0x42C0 (96.0) -> lw at,0x7F08(zero); same block word"
+    },
+    {
+      "address": "0x001D8468",
+      "old": [
+        "0x24E20060",
+        "0x24E4FFA0",
+        "0x30C30008",
+        "0x0040382D",
+        "0x0083380A"
+      ],
+      "new": [
+        "0x8C027F0C",
+        "0x30C30008",
+        "0x00022023",
+        "0x0083100A",
+        "0x00E23821"
+      ],
+      "block": "0x7F0C",
+      "purpose": "RaceDisplayUtil::fillRectangle edge shift (integer, 0x1D8448), a3 = (a2 & 8) ? a3 + 96 : a3 - 96: addiu v0,a3,96; addiu a0,a3,-96; andi v1,a2,8; move a3,v0; movz a3,a0,v1 -> lw v0,0x7F0C(zero); andi v1,a2,8; subu a0,zero,v0; movz v0,a0,v1; addu a3,a3,v0 (same result; v0 and a0 are dead after it, the first word stays in the branch delay slot)"
+    },
+    {
+      "address": "0x001F142C",
+      "old": [
+        "0x24050356"
+      ],
+      "new": [
+        "0x8C057F10"
+      ],
+      "block": "0x7F10",
+      "purpose": "race monitor (mini-map) canvas width in wide mode: addiu a1,zero,854 -> lw a1,0x7F10(zero); block value round(480 x R) below 16:9, 854 otherwise"
+    }
+  ]
+}

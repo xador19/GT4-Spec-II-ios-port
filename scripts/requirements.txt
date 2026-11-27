@@ -1,0 +1,3 @@
+# Observation tooling only; not linked into the C++ runtime. Exact version and sha256 (pip install --require-hashes).
+pycdlib==1.20.0 \
+    --hash=sha256:cb675959dd6d61e94f02560ed7e9a5d368a3188b5f7f31813bc25a750cff0863

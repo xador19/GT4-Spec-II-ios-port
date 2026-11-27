@@ -1,0 +1,30 @@
+# Your disc, anything made from it and everything make_ipa.sh downloads or builds. None of it goes into this repo.
+/private/
+/build/
+/dist/
+/ports/ios/deps/
+/ports/ios/local-res/
+/deps/
+*.iso
+*.ISO
+*.ipa
+*.elf
+*.ELF
+*.xdelta
+*.xdelta3
+*.vcdiff
+
+# Memory cards (saves), logs and screenshots from the phone.
+*.ps2
+*.mcd
+gt4.log
+*.png
+*.jpg
+*.ppm
+
+# Editors and Python.
+.DS_Store
+__pycache__/
+*.pyc
+/.vscode/
+/.idea/

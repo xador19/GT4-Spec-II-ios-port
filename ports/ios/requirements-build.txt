@@ -1,0 +1,13 @@
+# The Python packages the iOS build installs (ports/ios/pins.sh, make_tooling_venv), exact versions with the sha256 of
+# every file pip may pick: pip install --require-hashes --only-binary=:all: --no-deps refuses anything else.
+# pycdlib reads SCUS_974.36 from the player's disc image; Pillow draws the home screen icon (ports/ios/make_icon.py).
+# Pillow has macOS arm64 wheels here for CPython 3.10 to 3.14.
+
+pycdlib==1.20.0 \
+    --hash=sha256:cb675959dd6d61e94f02560ed7e9a5d368a3188b5f7f31813bc25a750cff0863
+pillow==12.0.0 \
+    --hash=sha256:1ac11e8ea4f611c3c0147424eae514028b5e9077dd99ab91e1bd7bc33ff145e1 \
+    --hash=sha256:a3475b96f5908b3b16c47533daaa87380c491357d197564e0ba34ae75c0f3257 \
+    --hash=sha256:71db6b4c1653045dacc1585c1b0d184004f0d7e694c7b34ac165ca70c0838082 \
+    --hash=sha256:5193fde9a5f23c331ea26d0cf171fbf67e3f247585f50c08b3e205c7aeb4589b \
+    --hash=sha256:266cd5f2b63ff316d5a1bba46268e603c9caf5606d44f38c2873c380950576ad

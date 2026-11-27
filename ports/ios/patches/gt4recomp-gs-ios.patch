@@ -1,0 +1,1197 @@
+diff --git a/3rdparty/cubeb/CMakeLists.txt b/3rdparty/cubeb/CMakeLists.txt
+index 89737b7ff..04e3550d7 100644
+--- a/3rdparty/cubeb/CMakeLists.txt
++++ b/3rdparty/cubeb/CMakeLists.txt
+@@ -125,7 +125,9 @@ if(USE_SNDIO)
+   target_compile_definitions(cubeb PRIVATE USE_SNDIO)
+ endif()
+ 
+-if(APPLE)
++# GT4Recomp iOS port: cubeb's AudioUnit backend uses macOS device APIs; on iOS cubeb has no backend (the GS core in
++# the game app plays no audio; the game's own audio goes through SDL).
++if(APPLE AND NOT IOS)
+ check_include_files(AudioUnit/AudioUnit.h USE_AUDIOUNIT)
+ if(USE_AUDIOUNIT)
+   target_sources(cubeb PRIVATE
+diff --git a/3rdparty/discord-rpc/CMakeLists.txt b/3rdparty/discord-rpc/CMakeLists.txt
+index 607b60c23..17de10a11 100644
+--- a/3rdparty/discord-rpc/CMakeLists.txt
++++ b/3rdparty/discord-rpc/CMakeLists.txt
+@@ -24,6 +24,11 @@ if(WIN32)
+ 		src/connection_win.cpp
+ 		src/discord_register_win.cpp
+ 	)
++elseif(IOS)
++	target_sources(discord-rpc PRIVATE
++		src/connection_unix.cpp
++		src/discord_register_ios.cpp
++	)
+ elseif(APPLE)
+ 	target_sources(discord-rpc PRIVATE
+ 		src/connection_unix.cpp
+diff --git a/3rdparty/discord-rpc/src/discord_register_ios.cpp b/3rdparty/discord-rpc/src/discord_register_ios.cpp
+new file mode 100644
+index 000000000..3f9cd0313
+--- /dev/null
++++ b/3rdparty/discord-rpc/src/discord_register_ios.cpp
+@@ -0,0 +1,7 @@
++// GT4Recomp iOS port: iOS apps cannot register URL handlers for Discord or run shell commands; registration is a no-op.
++#include "discord_rpc.h"
++#include "discord_register.h"
++
++extern "C" DISCORD_EXPORT void Discord_Register(const char*, const char*) {}
++
++extern "C" DISCORD_EXPORT void Discord_RegisterSteamGame(const char*, const char*) {}
+diff --git a/cmake/Pcsx2Utils.cmake b/cmake/Pcsx2Utils.cmake
+index 42135790e..bcc2cc514 100644
+--- a/cmake/Pcsx2Utils.cmake
++++ b/cmake/Pcsx2Utils.cmake
+@@ -13,6 +13,9 @@ function(detect_operating_system)
+ 		message(STATUS "Building for Windows.")
+ 	elseif(APPLE AND NOT IOS)
+ 		message(STATUS "Building for MacOS.")
++	elseif(IOS)
++		# GT4Recomp iOS port: the GS core only (GT4GS_ONLY), linked into the game app.
++		message(STATUS "Building for iOS (GS core only).")
+ 	elseif(LINUX)
+ 		message(STATUS "Building for Linux.")
+ 	elseif(BSD)
+diff --git a/cmake/SearchForStuff.cmake b/cmake/SearchForStuff.cmake
+index f3b71b7dd..a41c34827 100644
+--- a/cmake/SearchForStuff.cmake
++++ b/cmake/SearchForStuff.cmake
+@@ -37,6 +37,10 @@ if (WIN32)
+ 	add_subdirectory(3rdparty/winwil EXCLUDE_FROM_ALL)
+ 	set(FFMPEG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg/include")
+ 	find_package(Vtune)
++elseif(IOS)
++	# GT4Recomp iOS port: no libcurl or libpcap in the iOS SDK (stubs: common/HTTPDownloaderNone.cpp,
++	# pcsx2/DEV9/iOS/pcap_io_ios.cpp).
++	set(FFMPEG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg/include")
+ else()
+ 	find_package(CURL REQUIRED)
+ 	find_package(PCAP REQUIRED)
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index 94324ffae..93b8a298f 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -148,8 +148,13 @@ if(WIN32)
+ 		pathcch
+ 	)
+ elseif(APPLE)
++	if(IOS)
++		set(common_cocoa_source CocoaToolsIOS.mm)
++	else()
++		set(common_cocoa_source CocoaTools.mm)
++	endif()
+ 	target_sources(common PRIVATE
+-		CocoaTools.mm
++		${common_cocoa_source}
+ 		CocoaTools.h
+ 		Darwin/DarwinThreads.cpp
+ 		Darwin/DarwinMisc.cpp
+@@ -194,7 +199,9 @@ if (USE_GCC AND CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+ 	set_source_files_properties(FastJmp.cpp PROPERTIES COMPILE_FLAGS -fno-lto)
+ endif()
+ 
+-if(NOT WIN32)
++if(IOS)
++	target_sources(common PRIVATE HTTPDownloaderNone.cpp)
++elseif(NOT WIN32)
+ 	# libcurl-based HTTPDownloader
+ 	target_sources(common PRIVATE
+ 		HTTPDownloaderCurl.cpp
+diff --git a/common/CocoaToolsIOS.mm b/common/CocoaToolsIOS.mm
+new file mode 100644
+index 000000000..ca90129e6
+--- /dev/null
++++ b/common/CocoaToolsIOS.mm
+@@ -0,0 +1,135 @@
++// SPDX-FileCopyrightText: 2026 GT4Recomp contributors (based on common/CocoaTools.mm, 2002-2026 PCSX2 Dev Team)
++// SPDX-License-Identifier: GPL-3.0+
++//
++// GT4Recomp iOS port: the CocoaTools functions on UIKit. On iOS the GS core runs inside the game app; its "window" is a
++// UIView the app owns (WindowInfo::window_handle), and the Metal layer is a sublayer that fills it. Functions for the
++// desktop frontend (menus, trash, Finder, relaunch, windows and the Cocoa event loop) have no iOS meaning and do
++// nothing.
++
++#if ! __has_feature(objc_arc)
++	#error "Compile this with -fobjc-arc"
++#endif
++
++#include "CocoaTools.h"
++#include "Console.h"
++#include "HostSys.h"
++#include "WindowInfo.h"
++
++#include <UIKit/UIKit.h>
++#include <QuartzCore/QuartzCore.h>
++
++// MARK: - Metal Layers
++
++bool CocoaTools::CreateMetalLayer(WindowInfo* wi)
++{
++	if (![NSThread isMainThread])
++	{
++		bool ret;
++		dispatch_sync(dispatch_get_main_queue(), [&ret, wi]{ ret = CreateMetalLayer(wi); });
++		return ret;
++	}
++
++	CAMetalLayer* layer = [CAMetalLayer layer];
++	if (!layer)
++	{
++		Console.Error("Failed to create Metal layer.");
++		return false;
++	}
++
++	UIView* view = (__bridge UIView*)wi->window_handle;
++	layer.frame = view.bounds;
++	layer.contentsScale = view.window ? view.window.screen.nativeScale : UIScreen.mainScreen.nativeScale;
++	[view.layer addSublayer:layer];
++	wi->surface_handle = (__bridge_retained void*)layer;
++	return true;
++}
++
++void CocoaTools::DestroyMetalLayer(WindowInfo* wi)
++{
++	if (![NSThread isMainThread])
++	{
++		dispatch_sync_f(dispatch_get_main_queue(), wi, [](void* ctx){ DestroyMetalLayer(static_cast<WindowInfo*>(ctx)); });
++		return;
++	}
++
++	CAMetalLayer* layer = (__bridge_transfer CAMetalLayer*)wi->surface_handle;
++	if (!layer)
++		return;
++	wi->surface_handle = nullptr;
++	[layer removeFromSuperlayer];
++}
++
++std::optional<float> CocoaTools::GetViewRefreshRate(const WindowInfo& wi)
++{
++	if (![NSThread isMainThread])
++	{
++		std::optional<float> ret;
++		dispatch_sync(dispatch_get_main_queue(), [&ret, wi]{ ret = GetViewRefreshRate(wi); });
++		return ret;
++	}
++
++	UIView* const view = (__bridge UIView*)wi.window_handle;
++	UIScreen* screen = view.window ? view.window.screen : UIScreen.mainScreen;
++	return static_cast<float>(screen.maximumFramesPerSecond);
++}
++
++// MARK: - Desktop frontend functions (no iOS meaning)
++
++void CocoaTools::MarkHelpMenu(void*) {}
++
++bool Common::PlaySoundAsync(const char*)
++{
++	return false;
++}
++
++std::optional<std::string> CocoaTools::GetBundlePath()
++{
++	@autoreleasepool {
++		return std::string(NSBundle.mainBundle.bundlePath.fileSystemRepresentation);
++	}
++}
++
++std::optional<std::string> CocoaTools::GetNonTranslocatedBundlePath()
++{
++	return GetBundlePath();
++}
++
++std::optional<std::string> CocoaTools::MoveToTrash(std::string_view)
++{
++	return std::nullopt;
++}
++
++bool CocoaTools::DelayedLaunch(std::string_view)
++{
++	return false;
++}
++
++bool CocoaTools::ShowInFinder(std::string_view)
++{
++	return false;
++}
++
++std::optional<std::string> CocoaTools::GetResourcePath()
++{
++	@autoreleasepool {
++		// The app bundle is flat on iOS: PCSX2's resources sit in a pcsx2/ folder at its root (codesign refuses a
++		// top-level folder named "resources" in an iOS bundle).
++		return std::string([NSBundle.mainBundle.resourcePath stringByAppendingString:@"/pcsx2"].UTF8String);
++	}
++}
++
++void* CocoaTools::CreateWindow(std::string_view, u32, u32)
++{
++	return nullptr;
++}
++
++void CocoaTools::DestroyWindow(void*) {}
++
++void CocoaTools::GetWindowInfoFromWindow(WindowInfo* wi, void*)
++{
++	wi->type = WindowInfo::Type::Surfaceless;
++}
++
++void CocoaTools::RunCocoaEventLoop(bool) {}
++
++void CocoaTools::StopMainThreadEventLoop() {}
+diff --git a/common/Darwin/DarwinMisc.cpp b/common/Darwin/DarwinMisc.cpp
+index 9bc713885..b058eda17 100644
+--- a/common/Darwin/DarwinMisc.cpp
++++ b/common/Darwin/DarwinMisc.cpp
+@@ -25,8 +25,13 @@
+ #include <mach/task.h>
+ #include <mach/thread_state.h>
+ #include <mutex>
++#include <TargetConditionals.h>
++#if TARGET_OS_IPHONE
++#include <CoreFoundation/CoreFoundation.h>
++#else
+ #include <ApplicationServices/ApplicationServices.h>
+ #include <IOKit/pwr_mgt/IOPMLib.h>
++#endif
+ 
+ // Darwin (OSX) is a bit different from Linux when requesting properties of
+ // the OS because of its BSD/Mach heritage. Helpfully, most of this code
+@@ -136,6 +141,22 @@ std::string GetOSVersionString()
+ 	return type + " " + release + " " + arch;
+ }
+ 
++#if TARGET_OS_IPHONE
++// GT4Recomp iOS port: the app keeps the screen awake itself; there is no mouse cursor to move or track.
++bool Common::InhibitScreensaver(bool)
++{
++	return true;
++}
++
++void Common::SetMousePosition(int, int) {}
++
++bool Common::AttachMousePositionCb(std::function<void(int, int)>)
++{
++	return false;
++}
++
++void Common::DetachMousePositionCb() {}
++#else
+ static IOPMAssertionID s_pm_assertion;
+ 
+ bool Common::InhibitScreensaver(bool inhibit)
+@@ -215,6 +236,8 @@ void Common::DetachMousePositionCb()
+ 	mouseEventTap = nullptr;
+ }
+ 
++#endif
++
+ void Threading::Sleep(int ms)
+ {
+ 	usleep(1000 * ms);
+@@ -324,15 +347,23 @@ static thread_local int s_code_write_depth = 0;
+ 
+ void HostSys::BeginCodeWrite()
+ {
++#ifndef GT4GS_NO_JIT
+ 	if ((s_code_write_depth++) == 0)
+ 		pthread_jit_write_protect_np(0);
++#else
++	++s_code_write_depth; // the JIT-free core never writes code
++#endif
+ }
+ 
+ void HostSys::EndCodeWrite()
+ {
+ 	pxAssert(s_code_write_depth > 0);
++#ifndef GT4GS_NO_JIT
+ 	if ((--s_code_write_depth) == 0)
+ 		pthread_jit_write_protect_np(1);
++#else
++	--s_code_write_depth;
++#endif
+ }
+ 
+ [[maybe_unused]] static bool IsStoreInstruction(const void* ptr)
+diff --git a/common/HTTPDownloaderNone.cpp b/common/HTTPDownloaderNone.cpp
+new file mode 100644
+index 000000000..eb3e2e95f
+--- /dev/null
++++ b/common/HTTPDownloaderNone.cpp
+@@ -0,0 +1,9 @@
++// SPDX-License-Identifier: GPL-3.0+
++// GT4Recomp iOS port: the iOS SDK has no libcurl. Without a downloader, achievements and update checks report that
++// HTTP is unavailable, as when curl fails to initialise. The GS core in the game app never downloads anything.
++#include "common/HTTPDownloader.h"
++
++std::unique_ptr<HTTPDownloader> HTTPDownloader::Create(std::string)
++{
++	return {};
++}
+diff --git a/common/Linux/LnxHostSys.cpp b/common/Linux/LnxHostSys.cpp
+index 523e6eaaa..dbdc21c30 100644
+--- a/common/Linux/LnxHostSys.cpp
++++ b/common/Linux/LnxHostSys.cpp
+@@ -15,6 +15,9 @@
+ #include <mutex>
+ #include <sys/mman.h>
+ #include <unistd.h>
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#endif
+ #ifndef __APPLE__
+ #include <ucontext.h>
+ #endif
+@@ -61,6 +64,21 @@ std::string HostSys::GetFileMappingName(const char* prefix)
+ #endif
+ }
+ 
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++// GT4Recomp iOS port: the app sandbox refuses shm_open (EPERM). The JIT-free GS core maps the data memory once and
++// never a second view of it (fastmem needs the EE recompiler), so a placeholder handle stands for the "file" and
++// SharedMemoryMappingArea::Map gives that range private anonymous memory instead (as iPSX2 does on iOS devices).
++static int s_ios_shared_memory_placeholder;
++
++void* HostSys::CreateSharedMemory(const char* name, size_t size)
++{
++	return &s_ios_shared_memory_placeholder;
++}
++
++void HostSys::DestroySharedMemory(void* ptr)
++{
++}
++#else
+ void* HostSys::CreateSharedMemory(const char* name, size_t size)
+ {
+ 	const int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
+@@ -87,6 +105,7 @@ void HostSys::DestroySharedMemory(void* ptr)
+ {
+ 	close(static_cast<int>(reinterpret_cast<intptr_t>(ptr)));
+ }
++#endif
+ 
+ #ifndef __APPLE__
+ 
+@@ -174,6 +193,16 @@ u8* SharedMemoryMappingArea::Map(void* file_handle, size_t file_offset, void* ma
+ 	pxAssert(static_cast<u8*>(map_base) >= m_base_ptr && static_cast<u8*>(map_base) < (m_base_ptr + m_size));
+ 
+ 	const uint lnxmode = LinuxProt(mode);
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++	if (file_handle == &s_ios_shared_memory_placeholder)
++	{
++		pxAssertRel(file_offset == 0, "iOS: only one view of the data memory");
++		void* const ptr = mmap(map_base, map_size, lnxmode, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
++		if (ptr == MAP_FAILED)
++			return nullptr;
++	}
++	else
++#endif
+ 	if (file_handle)
+ 	{
+ 		const int fd = static_cast<int>(reinterpret_cast<intptr_t>(file_handle));
+@@ -210,7 +239,13 @@ bool SharedMemoryMappingArea::Unmap(void* map_base, size_t map_size, bool is_fil
+ 
+ void HostSys::FlushInstructionCache(void* address, u32 size)
+ {
++#ifdef GT4GS_NO_JIT
++	// GT4Recomp: the JIT-free core never writes code (and iOS has no __clear_cache for apps).
++	(void)address;
++	(void)size;
++#else
+ 	__builtin___clear_cache(reinterpret_cast<char*>(address), reinterpret_cast<char*>(address) + size);
++#endif
+ }
+ 
+ #endif
+diff --git a/pcsx2-gt4gs/CMakeLists.txt b/pcsx2-gt4gs/CMakeLists.txt
+index f70c62775..bad2eeac6 100644
+--- a/pcsx2-gt4gs/CMakeLists.txt
++++ b/pcsx2-gt4gs/CMakeLists.txt
+@@ -10,12 +10,21 @@ set_directory_properties(PROPERTIES COMPILE_DEFINITIONS "${gt4gs_dir_defs}")
+ 
+ set(GT4GS_STREAM_DIR "${CMAKE_SOURCE_DIR}/3rdparty/gt4recomp-gs-stream")
+ 
+-add_library(gt4gs_stream_transport STATIC
+-	StreamTransport.cpp
+-	StreamTransport.h
+-	"${GT4GS_STREAM_DIR}/gs_stream_ipc.cpp"
+-	"${GT4GS_STREAM_DIR}/gs_stream_file.cpp"
+-)
++if(IOS)
++	# GT4Recomp iOS port: the game app links its own copy of the transport (native/gs_stream, a superset of the
++	# vendored one with the same record layout); one copy per process, so only the consumer adapter is built here.
++	add_library(gt4gs_stream_transport STATIC
++		StreamTransport.cpp
++		StreamTransport.h
++	)
++else()
++	add_library(gt4gs_stream_transport STATIC
++		StreamTransport.cpp
++		StreamTransport.h
++		"${GT4GS_STREAM_DIR}/gs_stream_ipc.cpp"
++		"${GT4GS_STREAM_DIR}/gs_stream_file.cpp"
++	)
++endif()
+ target_include_directories(gt4gs_stream_transport PRIVATE "${GT4GS_STREAM_DIR}")
+ target_compile_features(gt4gs_stream_transport PRIVATE cxx_std_20)
+ target_compile_definitions(gt4gs_stream_transport PRIVATE _HAS_EXCEPTIONS=1)
+@@ -28,7 +37,12 @@ if(WIN32)
+ 	target_link_libraries(gt4gs_stream_transport PUBLIC kernel32 advapi32)
+ endif()
+ 
+-add_executable(pcsx2-gt4gs)
++if(IOS)
++	# GT4Recomp iOS port: the GS is a static library the game app links and runs on a thread (gt4gs_main).
++	add_library(pcsx2-gt4gs STATIC)
++else()
++	add_executable(pcsx2-gt4gs)
++endif()
+ set_target_properties(pcsx2-gt4gs PROPERTIES OUTPUT_NAME "gt4-gs")
+ 
+ if (PACKAGE_MODE)
+@@ -40,7 +54,11 @@ endif()
+ target_sources(pcsx2-gt4gs PRIVATE
+ 	Main.cpp
+ )
+-if(APPLE)
++if(IOS)
++	# GT4Recomp iOS port: the picture is drawn into a view the game app owns (IOSPresentation.mm).
++	target_sources(pcsx2-gt4gs PRIVATE IOSPresentation.mm MacPresentation.h)
++	set_source_files_properties(IOSPresentation.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc" SKIP_PRECOMPILE_HEADERS ON)
++elseif(APPLE)
+ 	# GT4Recomp: the picture is a remote Core Animation layer hosted by the game window (MacPresentation.mm).
+ 	target_sources(pcsx2-gt4gs PRIVATE MacPresentation.mm MacPresentation.h)
+ 	set_source_files_properties(MacPresentation.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc" SKIP_PRECOMPILE_HEADERS ON)
+diff --git a/pcsx2-gt4gs/IOSPresentation.mm b/pcsx2-gt4gs/IOSPresentation.mm
+new file mode 100644
+index 000000000..d1a26e1f7
+--- /dev/null
++++ b/pcsx2-gt4gs/IOSPresentation.mm
+@@ -0,0 +1,70 @@
++// SPDX-FileCopyrightText: 2026 GT4Recomp contributors
++// SPDX-License-Identifier: GPL-3.0+
++//
++// GT4Recomp iOS port: the GT4GSMac presentation interface (MacPresentation.h) inside the game app. iOS has one process,
++// so there is no remote Core Animation context to share: the game app creates a view over its window and a Metal layer
++// in it on the main thread, and hands both over with gt4gs_ios_set_host before it starts the GS thread. The Metal device
++// then draws into that layer from the GS thread and never needs the main thread (GSDeviceMTL.mm, TARGET_OS_IPHONE),
++// because the app's main thread runs the game and may itself be waiting for the GS.
++
++#if ! __has_feature(objc_arc)
++	#error "Compile this with -fobjc-arc"
++#endif
++
++#include "MacPresentation.h"
++
++#import <QuartzCore/QuartzCore.h>
++#import <UIKit/UIKit.h>
++
++#include <algorithm>
++#include <cstdio>
++
++namespace
++{
++	UIView* s_view = nil;
++	CAMetalLayer* s_layer = nil;
++	float s_scale = 1.0f;
++} // namespace
++
++// Called by the game app (main thread) before the GS thread starts. view: a UIView over the game picture; layer: a
++// CAMetalLayer that fills it; scale: pixels per point.
++extern "C" void gt4gs_ios_set_host(void* view, void* layer, float scale)
++{
++	s_view = (__bridge UIView*)view;
++	s_layer = (__bridge CAMetalLayer*)layer;
++	s_scale = scale > 0.0f ? scale : 1.0f;
++}
++
++bool GT4GSMac::CreateLiveView(WindowInfo* wi, uint32_t width, uint32_t height)
++{
++	if (!s_view || !s_layer)
++	{
++		std::fprintf(stderr, "gt4-gs: the game app gave no view for the picture\n");
++		return false;
++	}
++	wi->type = WindowInfo::Type::MacOS;
++	wi->window_handle = (__bridge void*)s_view;
++	wi->surface_handle = (__bridge void*)s_layer;
++	wi->surface_width = width;
++	wi->surface_height = height;
++	wi->surface_scale = s_scale;
++	return true;
++}
++
++void GT4GSMac::DestroyLiveView() {}
++
++bool GT4GSMac::AttachToGameWindow(uint32_t width, uint32_t height)
++{
++	if (!s_layer)
++		return false;
++	// The layer's drawable size follows the device's surface (GSDeviceMTL::UpdateWindow); nothing to move here.
++	std::fprintf(stderr, "gt4-gs: drawing into the game app's view (%ux%u pixels)\n", width, height);
++	return true;
++}
++
++void GT4GSMac::Resize(uint32_t, uint32_t) {}
++
++uint64_t GT4GSMac::PresentationId()
++{
++	return 0;
++}
+diff --git a/pcsx2-gt4gs/Main.cpp b/pcsx2-gt4gs/Main.cpp
+index e302aa808..9e64faede 100644
+--- a/pcsx2-gt4gs/Main.cpp
++++ b/pcsx2-gt4gs/Main.cpp
+@@ -35,6 +35,7 @@
+ #include <thread>
+ 
+ #ifdef __APPLE__
++#include <TargetConditionals.h>
+ #include "MacPresentation.h"
+ #endif
+ #ifdef _WIN32
+@@ -232,6 +233,13 @@ bool GSRunner::InitializeConfig()
+ 	Host::Internal::SetBaseSettingsLayer(&si);
+ 
+ 	VMManager::SetDefaultSettings(si, true, true, true, true, true);
++	// GT4Recomp iOS port: the app never goes online. PCSX2's networked parts are linked but stay off whatever the
++	// defaults say: achievements (and HTTPDownloaderNone has no transport anyway), the PINE IPC server, Discord
++	// presence and the emulated network adapter. None of these keys is on the settings allow-list.
++	si.SetBoolValue("Achievements", "Enabled", false);
++	si.SetBoolValue("EmuCore", "EnablePINE", false);
++	si.SetBoolValue("EmuCore", "EnableDiscordPresence", false);
++	si.SetBoolValue("DEV9/Eth", "EthEnable", false);
+ 
+ 	// GT4Recomp (gt4-gs 1.0.1): VMManager::Internal::LoadStartupSettings() creates the user folders (bios, memcards, logs,
+ 	// ...) and opens logs/emulog.txt under the data root. It runs in main() once the data root is known: for the
+@@ -1661,9 +1669,17 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
+ 	GSRunner::StopPlatformMessagePump();
+ }
+ 
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++// GT4Recomp iOS port: the GS runs on a thread of the game app (ports/ios in the game repository starts it with the
++// same arguments as the gt4-gs process). The app owns the process: no crash handler of our own.
++extern "C" int gt4gs_main(int argc, char* argv[])
++#else
+ int main(int argc, char* argv[])
++#endif
+ {
++#if !(defined(__APPLE__) && TARGET_OS_IPHONE)
+ 	CrashHandler::Install();
++#endif
+ 	GSRunner::InitializeConsole();
+ 
+ 	if (!GSRunner::InitializeConfig())
+diff --git a/pcsx2/CDVD/iOS/NoDrive.cpp b/pcsx2/CDVD/iOS/NoDrive.cpp
+new file mode 100644
+index 000000000..12f3ab23c
+--- /dev/null
++++ b/pcsx2/CDVD/iOS/NoDrive.cpp
+@@ -0,0 +1,35 @@
++// SPDX-License-Identifier: GPL-3.0+
++// GT4Recomp iOS port: iOS has no optical drives (and no IOKit storage API). The drive source never opens, and no drive is
++// listed, so PCSX2 behaves as on a computer without a disc drive. The GS core in the game app never reads discs.
++#include "CDVD/CDVDdiscReader.h"
++
++#include "common/Error.h"
++
++IOCtlSrc::IOCtlSrc(std::string filename)
++	: m_filename(std::move(filename))
++{
++}
++
++IOCtlSrc::~IOCtlSrc() = default;
++
++bool IOCtlSrc::Reopen(Error* error)
++{
++	Error::SetString(error, "Optical drives are not available on iOS.");
++	return false;
++}
++
++void IOCtlSrc::SetSpindleSpeed(bool) const {}
++u32 IOCtlSrc::GetSectorCount() const { return 0; }
++u32 IOCtlSrc::GetLayerBreakAddress() const { return 0; }
++s32 IOCtlSrc::GetMediaType() const { return -1; }
++const std::vector<toc_entry>& IOCtlSrc::ReadTOC() const { return m_toc; }
++bool IOCtlSrc::ReadSectors2048(u32, u32, u8*) const { return false; }
++bool IOCtlSrc::ReadSectors2352(u32, u32, u8*) const { return false; }
++bool IOCtlSrc::ReadDVDInfo() { return false; }
++bool IOCtlSrc::ReadCDInfo() { return false; }
++bool IOCtlSrc::ReadTrackSubQ(cdvdSubQ*) const { return false; }
++bool IOCtlSrc::DiscReady() { return false; }
++
++std::vector<std::string> GetOpticalDriveList() { return {}; }
++
++void GetValidDrive(std::string& drive) { drive.clear(); }
+diff --git a/pcsx2/CMakeLists.txt b/pcsx2/CMakeLists.txt
+index 023cd92d2..fa17d8f84 100644
+--- a/pcsx2/CMakeLists.txt
++++ b/pcsx2/CMakeLists.txt
+@@ -323,6 +323,10 @@ set(pcsx2DEV9Sources
+ 	DEV9/pcap_io.cpp
+ 	DEV9/net.cpp
+ 	)
++if(IOS)
++	# GT4Recomp iOS port: DEV9/iOS/pcap_io_ios.cpp replaces the libpcap adapter.
++	list(REMOVE_ITEM pcsx2DEV9Sources DEV9/pcap_io.cpp)
++endif()
+ 
+ # DEV9 headers
+ set(pcsx2DEV9Headers
+@@ -718,7 +722,7 @@ elseif(LINUX)
+ 	list(APPEND pcsx2USBHeaders
+ 		USB/usb-eyetoy/cam-linux.h
+ 	)
+-elseif(APPLE)
++elseif(APPLE AND NOT IOS)
+ 	list(APPEND pcsx2USBSources
+ 		USB/usb-eyetoy/cam-macos.mm
+ 	)
+@@ -1082,12 +1086,13 @@ set(pcsx2LTOSources
+ if(GT4GS_ONLY)
+ 	# GT4Recomp fork, JIT-free gt4-gs.exe: the EE/IOP recompilers, microVU and the VIF unpack recompilers are not
+ 	# compiled. GT4GSNoJit.cpp defines the few symbols the interpreters still name; each one stops the process.
+-	if(NOT ARCH_X86)
+-		message(FATAL_ERROR "GT4GS_ONLY is implemented for x86-64 only")
+-	endif()
++	# iOS port: on ARM64 the same rule leaves out pcsx2/arm64 (VIF dynarec, recompiler stubs) and vixl; the NEON VIF
++	# unpack loops stay, as they are plain C++ (no code generation).
+ 	list(APPEND pcsx2LTOSources GT4GSNoJit.cpp)
+ 	target_compile_definitions(PCSX2_FLAGS INTERFACE GT4GS_NO_JIT=1)
+-	target_link_libraries(PCSX2_FLAGS INTERFACE zydis)
++	if(ARCH_X86)
++		target_link_libraries(PCSX2_FLAGS INTERFACE zydis)
++	endif()
+ elseif(ARCH_X86)
+ 	list(APPEND pcsx2LTOSources ${pcsx2x86Sources} ${pcsx2x86Headers})
+ 	target_link_libraries(PCSX2_FLAGS INTERFACE zydis)
+@@ -1151,7 +1156,10 @@ endif()
+ target_sources(PCSX2 PRIVATE ${pcsx2USBSources} ${pcsx2USBHeaders})
+ 
+ if(APPLE OR BSD)
+-	if(APPLE)
++	if(IOS)
++		# GT4Recomp iOS port: no optical drives.
++		target_sources(PCSX2 PRIVATE CDVD/iOS/NoDrive.cpp)
++	elseif(APPLE)
+ 		target_sources(PCSX2 PRIVATE
+ 			${pcsx2OSXSources})
+ 	else()
+@@ -1212,6 +1220,10 @@ if(WIN32)
+ 		dwmapi.lib
+ 		OneCore.lib
+ 	)
++elseif(IOS)
++	# GT4Recomp iOS port: the PCAP adapter is a stub without libpcap.
++	target_sources(PCSX2 PRIVATE DEV9/iOS/pcap_io_ios.cpp)
++	target_include_directories(PCSX2_FLAGS INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/DEV9/iOS")
+ else()
+ 	target_link_libraries(PCSX2_FLAGS INTERFACE
+ 		PCAP::PCAP
+diff --git a/pcsx2/DEV9/iOS/net/route.h b/pcsx2/DEV9/iOS/net/route.h
+new file mode 100644
+index 000000000..3cd7e5c24
+--- /dev/null
++++ b/pcsx2/DEV9/iOS/net/route.h
+@@ -0,0 +1,47 @@
++// GT4Recomp iOS port: the iOS SDK leaves out <net/route.h>. DEV9 reads the routing table with sysctl(NET_RT_DUMP) to
++// find the gateway; these are the definitions it uses, with the layout of the macOS SDK header (the kernel is shared).
++#pragma once
++#include <sys/types.h>
++#include <sys/socket.h>
++
++struct rt_metrics {
++	u_int32_t rmx_locks;
++	u_int32_t rmx_mtu;
++	u_int32_t rmx_hopcount;
++	int32_t rmx_expire;
++	u_int32_t rmx_recvpipe;
++	u_int32_t rmx_sendpipe;
++	u_int32_t rmx_ssthresh;
++	u_int32_t rmx_rtt;
++	u_int32_t rmx_rttvar;
++	u_int32_t rmx_pksent;
++	u_int32_t rmx_filler[4];
++};
++
++struct rt_msghdr {
++	u_short rtm_msglen;
++	u_char rtm_version;
++	u_char rtm_type;
++	u_short rtm_index;
++	int rtm_flags;
++	int rtm_addrs;
++	pid_t rtm_pid;
++	int rtm_seq;
++	int rtm_errno;
++	int rtm_use;
++	u_int32_t rtm_inits;
++	struct rt_metrics rtm_rmx;
++};
++
++#define RTF_UP 0x1
++#define RTF_GATEWAY 0x2
++#define RTA_DST 0x1
++#define RTA_GATEWAY 0x2
++#define RTA_NETMASK 0x4
++#define RTAX_DST 0
++#define RTAX_GATEWAY 1
++#define RTAX_NETMASK 2
++#define RTAX_MAX 8
++#ifndef NET_RT_DUMP
++#define NET_RT_DUMP 1
++#endif
+diff --git a/pcsx2/DEV9/iOS/pcap.h b/pcsx2/DEV9/iOS/pcap.h
+new file mode 100644
+index 000000000..4f1fce47d
+--- /dev/null
++++ b/pcsx2/DEV9/iOS/pcap.h
+@@ -0,0 +1,5 @@
++// SPDX-License-Identifier: GPL-3.0+
++// GT4Recomp iOS port: the iOS SDK has no libpcap. pcap_io.h only needs the handle type; the adapter is a stub
++// (DEV9/iOS/pcap_io_ios.cpp) that never opens a capture.
++#pragma once
++typedef struct pcap pcap_t;
+diff --git a/pcsx2/DEV9/iOS/pcap_io_ios.cpp b/pcsx2/DEV9/iOS/pcap_io_ios.cpp
+new file mode 100644
+index 000000000..d1ee00800
+--- /dev/null
++++ b/pcsx2/DEV9/iOS/pcap_io_ios.cpp
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: GPL-3.0+
++// GT4Recomp iOS port: the PCAP network adapter without libpcap. It lists no adapters and never initialises, so DEV9
++// behaves as with no network adapter selected. The GS core in the game app never uses the network.
++#include "DEV9/pcap_io.h"
++
++PCAPAdapter::PCAPAdapter() = default;
++bool PCAPAdapter::blocks() { return false; }
++bool PCAPAdapter::isInitialised() { return false; }
++bool PCAPAdapter::recv(NetPacket*) { return false; }
++bool PCAPAdapter::send(NetPacket*) { return false; }
++void PCAPAdapter::reloadSettings() {}
++PCAPAdapter::~PCAPAdapter() = default;
++std::vector<AdapterEntry> PCAPAdapter::GetAdapters() { return {}; }
++AdapterOptions PCAPAdapter::GetAdapterOptions() { return AdapterOptions::None; }
+diff --git a/pcsx2/GS/GS.cpp b/pcsx2/GS/GS.cpp
+index 3159dd3a1..eb2e182c9 100644
+--- a/pcsx2/GS/GS.cpp
++++ b/pcsx2/GS/GS.cpp
+@@ -1,6 +1,9 @@
+ // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
+ // SPDX-License-Identifier: GPL-3.0+
+ 
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#endif
+ #include "Config.h"
+ #include "Counters.h"
+ #include "ImGui/FullscreenUI.h"
+@@ -1041,6 +1044,22 @@ void* GSAllocateWrappedMemory(size_t size, size_t repeat)
+ {
+ 	pxAssert(s_shm_fd == -1);
+ 
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++	// GT4Recomp iOS port: the app sandbox refuses shm_open; an unlinked file in the app's temporary folder gives the
++	// same mirrored mappings (as iPSX2 does on iOS devices).
++	const char* tmpdir = getenv("TMPDIR");
++	std::string file_name = std::string(tmpdir ? tmpdir : "/tmp") + "/GS.mem.XXXXXX";
++	s_shm_fd = mkstemp(file_name.data());
++	if (s_shm_fd != -1)
++	{
++		unlink(file_name.c_str()); // file is deleted but descriptor is still open
++	}
++	else
++	{
++		fprintf(stderr, "Failed to create %s due to %s\n", file_name.c_str(), strerror(errno));
++		return nullptr;
++	}
++#else
+ 	const char* file_name = "/GS.mem";
+ 	s_shm_fd = shm_open(file_name, O_RDWR | O_CREAT | O_EXCL, 0600);
+ 	if (s_shm_fd != -1)
+@@ -1052,6 +1071,7 @@ void* GSAllocateWrappedMemory(size_t size, size_t repeat)
+ 		fprintf(stderr, "Failed to open %s due to %s\n", file_name, strerror(errno));
+ 		return nullptr;
+ 	}
++#endif
+ 
+ 	if (ftruncate(s_shm_fd, repeat * size) < 0)
+ 		fprintf(stderr, "Failed to reserve memory due to %s\n", strerror(errno));
+diff --git a/pcsx2/GS/Renderers/Metal/GSDeviceMTL.h b/pcsx2/GS/Renderers/Metal/GSDeviceMTL.h
+index 1192af18b..d85e53357 100644
+--- a/pcsx2/GS/Renderers/Metal/GSDeviceMTL.h
++++ b/pcsx2/GS/Renderers/Metal/GSDeviceMTL.h
+@@ -17,7 +17,15 @@
+ #include "GS/GS.h"
+ #include "GSMTLDeviceInfo.h"
+ #include "GSMTLSharedHeader.h"
++#include <TargetConditionals.h>
++#if TARGET_OS_IPHONE
++// GT4Recomp iOS port: the surface is a UIView the game app owns; the Metal layer is its sublayer.
++#include <UIKit/UIKit.h>
++using GSMTLHostView = UIView;
++#else
+ #include <AppKit/AppKit.h>
++using GSMTLHostView = NSView;
++#endif
+ #include <Metal/Metal.h>
+ #include <QuartzCore/QuartzCore.h>
+ #include <atomic>
+@@ -224,7 +232,7 @@ public:
+ 	MTLResourceOptions m_resource_options_shared_wc;
+ 
+ 	// Previously in MetalHostDisplay.
+-	MRCOwned<NSView*> m_view;
++	MRCOwned<GSMTLHostView*> m_view;
+ 	MRCOwned<CAMetalLayer*> m_layer;
+ 	MRCOwned<id<CAMetalDrawable>> m_current_drawable;
+ 	MRCOwned<MTLRenderPassDescriptor*> m_pass_desc;
+@@ -447,6 +455,13 @@ public:
+ 
+ 	// MARK: Main Render Encoder operations
+ 	void MRESetHWPipelineState(GSHWDrawConfig::VSSelector vs, GSHWDrawConfig::PSSelector ps, GSHWDrawConfig::BlendState blend, GSHWDrawConfig::ColorMaskSelector cms);
++	// GT4Recomp: builds one hardware draw pipeline and keeps it in m_hw_pipeline.
++	id<MTLRenderPipelineState> CreateHWPipeline(const PipelineSelectorMTL& fullsel, GSHWDrawConfig::BlendState blend, GSHWDrawConfig::ColorMaskSelector cms);
++	// GT4Recomp: every pipeline the game has needed is listed in the cache folder (metal_pipelines.bin) and built again
++	// while the GS starts, so a car or track only costs a shader build the first time it is ever seen.
++	void PrebuildRecordedHWPipelines();
++	void RecordHWPipeline(const PipelineSelectorMTL& fullsel, GSHWDrawConfig::BlendState blend, GSHWDrawConfig::ColorMaskSelector cms);
++	std::FILE* m_pipeline_record = nullptr;
+ 	void MRESetDSS(DepthStencilSelector sel);
+ 	void MRESetDSS(id<MTLDepthStencilState> dss);
+ 	void MRESetSampler(SamplerSelector sel);
+diff --git a/pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm b/pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm
+index 6bf6af8eb..b193e5c7e 100644
+--- a/pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm
++++ b/pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm
+@@ -8,11 +8,15 @@
+ #include "GS/Renderers/Metal/GSTextureMTL.h"
+ #include "GS/GSPerfMon.h"
+ #include "GS/GSShaderCompileIndicator.h"
++#include "Config.h"
+ 
+ #include "common/Console.h"
+ #include "common/HostSys.h"
++#include "common/Path.h"
++#include "common/Timer.h"
+ 
+ #include "cpuinfo.h"
++#include <unordered_set>
+ #include "imgui.h"
+ 
+ #ifdef __APPLE__
+@@ -847,10 +851,17 @@ static void setFnConstantI(MTLFunctionConstantValues* fc, T value, GSMTLFnConsta
+ template <typename Fn>
+ static void OnMainThread(Fn&& fn)
+ {
++#if TARGET_OS_IPHONE
++	// GT4Recomp iOS port: the game app's main thread runs the game and can be waiting for the GS, so a dispatch_sync to
++	// it could deadlock. The app creates the layer on its main thread beforehand (WindowInfo::surface_handle) and the
++	// surface functions below only use it, which is safe from the GS thread.
++	fn();
++#else
+ 	if ([NSThread isMainThread])
+ 		fn();
+ 	else
+ 		dispatch_sync(dispatch_get_main_queue(), fn);
++#endif
+ }
+ 
+ RenderAPI GSDeviceMTL::GetRenderAPI() const
+@@ -862,20 +873,43 @@ static void OnMainThread(Fn&& fn)
+ 
+ void GSDeviceMTL::AttachSurfaceOnMainThread()
+ {
++#if TARGET_OS_IPHONE
++	m_layer = MRCRetain((__bridge CAMetalLayer*)m_window_info.surface_handle);
++	[m_layer setDrawableSize:CGSizeMake(m_window_info.surface_width, m_window_info.surface_height)];
++	[m_layer setDevice:m_dev.dev];
++	m_view = MRCRetain((__bridge GSMTLHostView*)m_window_info.window_handle);
++	return;
++#endif
+ 	pxAssert([NSThread isMainThread]);
+ 	m_layer = MRCRetain([CAMetalLayer layer]);
+ 	[m_layer setDrawableSize:CGSizeMake(m_window_info.surface_width, m_window_info.surface_height)];
+ 	[m_layer setDevice:m_dev.dev];
+-	m_view = MRCRetain((__bridge NSView*)m_window_info.window_handle);
++	m_view = MRCRetain((__bridge GSMTLHostView*)m_window_info.window_handle);
++#if TARGET_OS_IPHONE
++	[m_layer setFrame:[m_view bounds]];
++	[m_layer setContentsScale:[m_view contentScaleFactor]];
++	[[m_view layer] addSublayer:m_layer];
++#else
+ 	[m_view setWantsLayer:YES];
+ 	[m_view setLayer:m_layer];
++#endif
+ }
+ 
+ void GSDeviceMTL::DetachSurfaceOnMainThread()
+ {
++#if TARGET_OS_IPHONE
++	// The layer belongs to the game app (IOSPresentation.mm); only the references are dropped.
++	m_view = nullptr;
++	m_layer = nullptr;
++	return;
++#endif
+ 	pxAssert([NSThread isMainThread]);
++#if TARGET_OS_IPHONE
++	[m_layer removeFromSuperlayer];
++#else
+ 	[m_view setLayer:nullptr];
+ 	[m_view setWantsLayer:NO];
++#endif
+ 	m_view = nullptr;
+ 	m_layer = nullptr;
+ }
+@@ -1042,7 +1076,9 @@ static bool ConvertShaderNotNeeded(ShaderConvert shader)
+ 
+ 		// Metal does not support mailbox.
+ 		m_vsync_mode = (m_vsync_mode == GSVSyncMode::Mailbox) ? GSVSyncMode::FIFO : m_vsync_mode;
++#if !TARGET_OS_IPHONE
+ 		[m_layer setDisplaySyncEnabled:m_vsync_mode == GSVSyncMode::FIFO];
++#endif
+ 	}
+ 	else
+ 	{
+@@ -1339,6 +1375,7 @@ static bool ConvertShaderNotNeeded(ShaderConvert shader)
+ 	m_imgui_pipeline = MakePipeline(pdesc, LoadShader(@"vs_imgui"), LoadShader(@"ps_imgui"), @"imgui");
+ 
+ 	[initCommands commit];
++	PrebuildRecordedHWPipelines();
+ 	return true;
+ }}
+ 
+@@ -1348,6 +1385,11 @@ static bool ConvertShaderNotNeeded(ShaderConvert shader)
+ 	std::lock_guard<std::mutex> guard(m_backref->first);
+ 	m_backref->second = nullptr;
+ 
++	if (m_pipeline_record)
++	{
++		std::fclose(m_pipeline_record);
++		m_pipeline_record = nullptr;
++	}
+ 	GSDevice::Destroy();
+ 	GSDeviceMTL::DestroySurface();
+ 	m_queue = nullptr;
+@@ -1506,8 +1548,10 @@ static bool ConvertShaderNotNeeded(ShaderConvert shader)
+ 				{
+ 					[[MTLCaptureManager sharedCaptureManager] stopCapture];
+ 					Console.WriteLn("Metal Trace Capture to /tmp/PCSX2MTLCapture.gputrace finished");
++#if !TARGET_OS_IPHONE
+ 					[[NSWorkspace sharedWorkspace] selectFile:path
+ 					                 inFileViewerRootedAtPath:@"/tmp/"];
++#endif
+ 				}
+ 			}
+ 			else if (s_capture_next)
+@@ -1551,7 +1595,9 @@ static bool ConvertShaderNotNeeded(ShaderConvert shader)
+ 		return;
+ 
+ 	m_vsync_mode = (mode == GSVSyncMode::Mailbox) ? GSVSyncMode::FIFO : mode;
++#if !TARGET_OS_IPHONE
+ 	[m_layer setDisplaySyncEnabled:m_vsync_mode == GSVSyncMode::FIFO];
++#endif
+ }
+ 
+ bool GSDeviceMTL::SetGPUTimingEnabled(bool enabled)
+@@ -1983,7 +2029,15 @@ static MTLBlendOperation ConvertBlendOp(GSDevice::BlendOp generic)
+ 		[m_current_render.encoder setRenderPipelineState:idx->second];
+ 		return;
+ 	}
++	[m_current_render.encoder setRenderPipelineState:CreateHWPipeline(fullsel, blend, cms)];
++	RecordHWPipeline(fullsel, blend, cms);
++}
+ 
++id<MTLRenderPipelineState> GSDeviceMTL::CreateHWPipeline(const PipelineSelectorMTL& fullsel, GSHWDrawConfig::BlendState blend, GSHWDrawConfig::ColorMaskSelector cms)
++{
++	const GSHWDrawConfig::VSSelector vssel = fullsel.vs;
++	const GSHWDrawConfig::PSSelector pssel = fullsel.ps;
++	const PipelineSelectorExtrasMTL extras = fullsel.extras;
+ 	bool primid_tracking_init = pssel.date == 1 || pssel.date == 2;
+ 
+ 	VSSelector vssel_mtl;
+@@ -2111,9 +2165,106 @@ static MTLBlendOperation ConvertBlendOp(GSDevice::BlendOp generic)
+ 	}
+ 	NSString* pname = [NSString stringWithFormat:@"HW Render %x.%llx.%llx.%x", vssel_mtl.key, pssel.key_hi, pssel.key_lo, extras.fullkey];
+ 	auto pipeline = MakePipeline(pdesc, vs, ps, pname);
+-
+-	[m_current_render.encoder setRenderPipelineState:pipeline];
++	id<MTLRenderPipelineState> result = pipeline;
+ 	m_hw_pipeline.insert(std::make_pair(fullsel, std::move(pipeline)));
++	return result;
++}
++
++namespace
++{
++	// metal_pipelines.bin: a header, then one record per pipeline in the order the game first needed them.
++	constexpr u32 kPipelineListMagic = 0x4C50544D; // "MTPL"
++	constexpr u32 kPipelineListVersion = 1;
++	struct PipelineListHeader
++	{
++		u32 magic;
++		u32 version;
++		u32 record_size;
++		u32 selector_size;
++	};
++	struct PipelineListRecord
++	{
++		PipelineSelectorMTL selector;
++		u32 blend_key;
++		u8 color_mask_key;
++		u8 pad[3];
++	};
++	static_assert(sizeof(PipelineListRecord) == 32);
++	// Prebuilding stops after this long; the rest are built when the game first draws with them, as before.
++	constexpr double kPrebuildBudgetSeconds = 10.0;
++
++	std::string PipelineListPath()
++	{
++		return Path::Combine(EmuFolders::Cache, "metal_pipelines.bin");
++	}
++} // namespace
++
++void GSDeviceMTL::PrebuildRecordedHWPipelines()
++{ @autoreleasepool {
++	const std::string path = PipelineListPath();
++	std::vector<PipelineListRecord> records;
++	if (std::FILE* file = std::fopen(path.c_str(), "rb"))
++	{
++		PipelineListHeader header = {};
++		if (std::fread(&header, sizeof(header), 1, file) == 1 && header.magic == kPipelineListMagic &&
++			header.version == kPipelineListVersion && header.record_size == sizeof(PipelineListRecord) &&
++			header.selector_size == sizeof(PipelineSelectorMTL))
++		{
++			PipelineListRecord record;
++			while (std::fread(&record, sizeof(record), 1, file) == 1)
++				records.push_back(record);
++		}
++		else
++		{
++			Console.WarningFmt("Metal: {} is from another build; starting a new pipeline list", path);
++		}
++		std::fclose(file);
++	}
++
++	const Common::Timer timer;
++	size_t built = 0;
++	for (const PipelineListRecord& record : records)
++	{
++		if (timer.GetTimeSeconds() > kPrebuildBudgetSeconds)
++			break;
++		if (m_hw_pipeline.find(record.selector) != m_hw_pipeline.end())
++			continue;
++		GSHWDrawConfig::BlendState blend;
++		blend.key = record.blend_key;
++		GSHWDrawConfig::ColorMaskSelector cms;
++		cms.key = record.color_mask_key;
++		CreateHWPipeline(record.selector, blend, cms);
++		built++;
++	}
++	Console.WriteLnFmt("Metal: prebuilt {} of {} recorded draw pipelines in {:.0f} ms", built, records.size(),
++		timer.GetTimeMilliseconds());
++
++	// Rewrite the list with what is known now (drops duplicates and anything from another build), then append to it.
++	m_pipeline_record = std::fopen(path.c_str(), "wb");
++	if (!m_pipeline_record)
++	{
++		Console.WarningFmt("Metal: cannot write {}; pipelines are not recorded", path);
++		return;
++	}
++	const PipelineListHeader header = {kPipelineListMagic, kPipelineListVersion, sizeof(PipelineListRecord), sizeof(PipelineSelectorMTL)};
++	std::fwrite(&header, sizeof(header), 1, m_pipeline_record);
++	std::unordered_set<PipelineSelectorMTL> written;
++	for (const PipelineListRecord& record : records)
++		if (written.insert(record.selector).second)
++			std::fwrite(&record, sizeof(record), 1, m_pipeline_record);
++	std::fflush(m_pipeline_record);
++}}
++
++void GSDeviceMTL::RecordHWPipeline(const PipelineSelectorMTL& fullsel, GSHWDrawConfig::BlendState blend, GSHWDrawConfig::ColorMaskSelector cms)
++{
++	if (!m_pipeline_record)
++		return;
++	PipelineListRecord record = {};
++	record.selector = fullsel;
++	record.blend_key = blend.key;
++	record.color_mask_key = cms.key;
++	std::fwrite(&record, sizeof(record), 1, m_pipeline_record);
++	std::fflush(m_pipeline_record);
+ }
+ 
+ void GSDeviceMTL::MRESetDSS(DepthStencilSelector sel)
+@@ -2143,9 +2294,16 @@ static MTLBlendOperation ConvertBlendOp(GSDevice::BlendOp generic)
+ 
+ static void textureBarrier(id<MTLRenderCommandEncoder> enc)
+ {
++#if TARGET_OS_IPHONE
++	// GT4Recomp iOS port: render encoders have no memory barriers on iOS. Every iOS GPU is an Apple GPU with
++	// framebuffer fetch, which the shaders use to read the render target; tile memory keeps fragments of one pixel in
++	// submission order, so a draw that reads its own target needs no barrier.
++	(void)enc;
++#else
+ 	[enc memoryBarrierWithScope:MTLBarrierScopeRenderTargets
+ 	                afterStages:MTLRenderStageFragment
+ 	               beforeStages:MTLRenderStageFragment];
++#endif
+ }
+ 
+ void GSDeviceMTL::MRESetTexture(GSTexture* tex, int pos)
+diff --git a/pcsx2/GS/Renderers/Metal/GSMTLDeviceInfo.mm b/pcsx2/GS/Renderers/Metal/GSMTLDeviceInfo.mm
+index 7649f59a3..347933c48 100644
+--- a/pcsx2/GS/Renderers/Metal/GSMTLDeviceInfo.mm
++++ b/pcsx2/GS/Renderers/Metal/GSMTLDeviceInfo.mm
+@@ -246,8 +246,10 @@ static DetectionResult detectIntelGPU(id<MTLDevice> dev, id<MTLLibrary> lib)
+ 		if ([dev supportsFamily:MTLGPUFamilyApple3])
+ 			return 16384;
+ 	}
++#if !TARGET_OS_IPHONE
+ 	if ([dev supportsFeatureSet:MTLFeatureSet_macOS_GPUFamily1_v1])
+ 		return 16384;
++#endif
+ 	return 8192;
+ }
+ 
+diff --git a/pcsx2/GS/Renderers/SW/GSDrawScanline.h b/pcsx2/GS/Renderers/SW/GSDrawScanline.h
+index 4ad994b29..920f5eb4b 100644
+--- a/pcsx2/GS/Renderers/SW/GSDrawScanline.h
++++ b/pcsx2/GS/Renderers/SW/GSDrawScanline.h
+@@ -13,8 +13,7 @@
+ #elif defined(ARCH_X86)
+ #include "GS/Renderers/SW/GSSetupPrimCodeGenerator.all.h"
+ #include "GS/Renderers/SW/GSDrawScanlineCodeGenerator.all.h"
+-#endif
+-#ifdef ARCH_ARM64
++#elif defined(ARCH_ARM64)
+ #include "GS/Renderers/SW/GSSetupPrimCodeGenerator.arm64.h"
+ #include "GS/Renderers/SW/GSDrawScanlineCodeGenerator.arm64.h"
+ #endif
+diff --git a/pcsx2/Input/InputManager.cpp b/pcsx2/Input/InputManager.cpp
+index 813b6da7f..ddf840b24 100644
+--- a/pcsx2/Input/InputManager.cpp
++++ b/pcsx2/Input/InputManager.cpp
+@@ -1863,6 +1863,9 @@ void InputManager::UpdateInputSourceState(SettingsInterface& si, std::unique_loc
+ 
+ #include "Input/SDLInputSource.h"
+ 
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#endif
+ #ifdef _WIN32
+ #include "Input/DInputSource.h"
+ #include "Input/XInputSource.h"
+@@ -1870,6 +1873,12 @@ void InputManager::UpdateInputSourceState(SettingsInterface& si, std::unique_loc
+ 
+ void InputManager::ReloadSources(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock)
+ {
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++	// GT4Recomp iOS port: the GS runs on a thread of the game app, which owns the controllers through the same SDL
++	// library. A second SDL input source here pumps SDL events from another thread and steals the game's button
++	// events (stuck and repeating buttons), so no input source is ever opened.
++	return;
++#endif
+ 	UpdateInputSourceState<SDLInputSource>(si, settings_lock, InputSourceType::SDL);
+ #ifdef _WIN32
+ 	UpdateInputSourceState<DInputSource>(si, settings_lock, InputSourceType::DInput);
